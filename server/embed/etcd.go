@@ -47,12 +47,11 @@ import (
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/soheilhy/cmux"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
-	"go.opentelemetry.io/otel/exporters/otlp"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpgrpc"
+	otlpgrpc "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/semconv"
+	semconv "go.opentelemetry.io/otel/semconv/v1.10.0"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -810,15 +809,15 @@ func parseCompactionRetention(mode, retention string) (ret time.Duration, err er
 }
 
 func (e *Etcd) setupTracing(ctx context.Context) (exporter tracesdk.SpanExporter, options []otelgrpc.Option, err error) {
-	exporter, err = otlp.NewExporter(ctx,
-		otlpgrpc.NewDriver(
-			otlpgrpc.WithEndpoint(e.cfg.ExperimentalDistributedTracingAddress),
-			otlpgrpc.WithInsecure(),
-		))
+	exporter, err = otlpgrpc.New(ctx,
+		otlpgrpc.WithEndpoint(e.cfg.ExperimentalDistributedTracingAddress),
+		otlpgrpc.WithInsecure(),
+	)
 	if err != nil {
 		return nil, nil, err
 	}
 	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
 		semconv.ServiceNameKey.String(e.cfg.ExperimentalDistributedTracingServiceName),
 	)
 	// As Tracing service Instance ID must be unique, it should
@@ -826,11 +825,15 @@ func (e *Etcd) setupTracing(ctx context.Context) (exporter tracesdk.SpanExporter
 	// if it's a non empty string.
 	if e.cfg.ExperimentalDistributedTracingServiceInstanceID != "" {
 		resWithIDKey := resource.NewWithAttributes(
+			semconv.SchemaURL,
 			(semconv.ServiceInstanceIDKey.String(e.cfg.ExperimentalDistributedTracingServiceInstanceID)),
 		)
 		// Merge resources to combine into a new
 		// resource in case of duplicates.
-		res = resource.Merge(res, resWithIDKey)
+		res, err = resource.Merge(res, resWithIDKey)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	options = append(options,
