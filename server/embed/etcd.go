@@ -45,6 +45,12 @@ import (
 
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/soheilhy/cmux"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	otlpgrpc "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	tracesdk "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.10.0"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -809,4 +815,57 @@ func parseCompactionRetention(mode, retention string) (ret time.Duration, err er
 		}
 	}
 	return ret, nil
+}
+
+func (e *Etcd) setupTracing(ctx context.Context) (exporter tracesdk.SpanExporter, options []otelgrpc.Option, err error) {
+	exporter, err = otlpgrpc.New(ctx,
+		otlpgrpc.WithEndpoint(e.cfg.ExperimentalDistributedTracingAddress),
+		otlpgrpc.WithInsecure(),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String(e.cfg.ExperimentalDistributedTracingServiceName),
+	)
+	// As Tracing service Instance ID must be unique, it should
+	// never use the empty default string value, so we only set it
+	// if it's a non empty string.
+	if e.cfg.ExperimentalDistributedTracingServiceInstanceID != "" {
+		resWithIDKey := resource.NewWithAttributes(
+			semconv.SchemaURL,
+			(semconv.ServiceInstanceIDKey.String(e.cfg.ExperimentalDistributedTracingServiceInstanceID)),
+		)
+		// Merge resources to combine into a new
+		// resource in case of duplicates.
+		res, err = resource.Merge(res, resWithIDKey)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	options = append(options,
+		otelgrpc.WithPropagators(
+			propagation.NewCompositeTextMapPropagator(
+				propagation.TraceContext{},
+				propagation.Baggage{},
+			),
+		),
+		otelgrpc.WithTracerProvider(
+			tracesdk.NewTracerProvider(
+				tracesdk.WithBatcher(exporter),
+				tracesdk.WithResource(res),
+			),
+		),
+	)
+
+	e.cfg.logger.Info(
+		"distributed tracing enabled",
+		zap.String("distributed-tracing-address", e.cfg.ExperimentalDistributedTracingAddress),
+		zap.String("distributed-tracing-service-name", e.cfg.ExperimentalDistributedTracingServiceName),
+		zap.String("distributed-tracing-service-instance-id", e.cfg.ExperimentalDistributedTracingServiceInstanceID),
+	)
+
+	return exporter, options, err
 }
